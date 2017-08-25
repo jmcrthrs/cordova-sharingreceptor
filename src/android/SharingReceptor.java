@@ -1,28 +1,40 @@
 package org.apache.cordova.sharingreceptor;
 
-import java.lang.RuntimeException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.HashSet;
 import java.util.Arrays;
 
-import org.apache.cordova.CordovaActivity;
+import java.lang.Integer;
+import java.lang.reflect.Array;
+
+import android.content.Intent;
+import android.database.Cursor;
+import android.provider.MediaStore;
+import android.app.Activity;
+import android.net.Uri;
+import android.util.Log;
+import android.Manifest;
+import android.Manifest.permission;
+
+import android.content.pm.PackageManager;
+import android.content.ClipData;
+import android.os.Bundle;
+import android.os.Build;
+import android.content.ContentResolver;
+import android.webkit.MimeTypeMap;
+
+import org.apache.cordova.CordovaArgs;
+import org.apache.cordova.CallbackContext;
+import org.apache.cordova.CordovaPlugin;
+import org.apache.cordova.PluginResult;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import android.content.Intent;
-import android.os.Bundle;
-import android.net.Uri;
-import android.text.Html;
-
-import org.apache.cordova.CallbackContext;
-import org.apache.cordova.CordovaPlugin;
-import org.apache.cordova.CordovaResourceApi;
-import org.apache.cordova.PluginResult;
-
-import android.util.Log;
+import java.lang.RuntimeException;
 
 /**
  *
@@ -42,56 +54,7 @@ public class SharingReceptor extends CordovaPlugin {
         return SEND_INTENTS.contains(intent.getAction());
     }
 
-    private static JSONObject serializeIntent(Intent intent) throws JSONException {
-        JSONObject extras = SharingReceptor.serializeBundle(intent.getExtras());
-        JSONObject intentJson = new JSONObject();
-        intentJson.put("action", intent.getAction());
-        intentJson.put("data", SharingReceptor.safeJSONWrap(intent.getData()) );
-        intentJson.put("dataString", intent.getDataString());
-        intentJson.put("type", intent.getType());
-        intentJson.put("extras", extras);
-        JSONObject result = new JSONObject();
-        result.put("platform", "android");
-        result.put("intent", intentJson);
-        return result;
-    }
-
-    // See http://stackoverflow.com/a/21859000/82609
-    private static JSONObject serializeBundle(Bundle bundle) throws JSONException {
-        JSONObject json = new JSONObject();
-        if ( bundle != null ) {
-            Set<String> keys = bundle.keySet();
-            for (String key : keys) {
-                Object value = bundle.get(key);
-                try {
-                    json.put(key, SharingReceptor.safeJSONWrap(value));
-                } catch(Exception e) {
-                    Log.e(TAG,"Can't serialize key " + key,e);
-                    throw new RuntimeException("Can't serialize bundle for key = " + key,e);
-                }
-            }
-        }
-        Log.i(TAG, "json -> " + json.toString());
-        return json;
-    }
-
-    // Because JSONObject.wrap(value) returns null on failure (this is the case for HierarchicalUri instances for example)
-    private static Object safeJSONWrap(Object value) throws JSONException {
-        Object wrappedValue = JSONObject.wrap(value);
-        boolean wrappingHasFailed = (value != null && wrappedValue == null);
-        if ( wrappingHasFailed ) {
-            wrappedValue = value.toString(); // Fallback method
-        }
-        return wrappedValue;
-    }
-
-    /////////////////////////////////////////////////////////////////////////////////////////:
-    /////////////////////////////////////////////////////////////////////////////////////////:
-    /////////////////////////////////////////////////////////////////////////////////////////:
-
-
     private CallbackContext listenerCallback = null;
-
 
     @Override
     public boolean execute(String action, JSONArray args, CallbackContext callbackContext) {
@@ -134,9 +97,6 @@ public class SharingReceptor extends CordovaPlugin {
         // TODO would it be useful to replace current activity intent by new intent? Can it messes things up?
     }
 
-
-
-
     // We try to publish in the JS callback the intent data, if the intent is a send intent, and if the callback was correctly setup
     private void maybePublishIntent(Intent intent) {
         if ( !SharingReceptor.isSendIntent(intent) ) {
@@ -149,7 +109,7 @@ public class SharingReceptor extends CordovaPlugin {
 
             JSONObject intentJson;
             try {
-                intentJson = SharingReceptor.serializeIntent(intent);
+                intentJson = getIntentJson(intent);
             } catch (Exception e) {
                 throw new RuntimeException("Can't serialize intent " + intent,e);
             }
@@ -157,6 +117,87 @@ public class SharingReceptor extends CordovaPlugin {
             PluginResult result = new PluginResult(PluginResult.Status.OK, intentJson);
             result.setKeepCallback(true);
             this.listenerCallback.sendPluginResult(result);
+        }
+    }
+
+    /**
+     * Return JSON representation of intent attributes
+     *
+     * @param intent
+     * @return
+     */
+    private JSONObject getIntentJson(Intent intent) {
+        JSONObject intentJSON = null;
+        ClipData clipData = null;
+        JSONObject[] items = null;
+        ContentResolver cR = this.cordova.getActivity().getApplicationContext().getContentResolver();
+        MimeTypeMap mime = MimeTypeMap.getSingleton();
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+            clipData = intent.getClipData();
+            if(clipData != null) {
+                int clipItemCount = clipData.getItemCount();
+                items = new JSONObject[clipItemCount];
+
+                for (int i = 0; i < clipItemCount; i++) {
+
+                    ClipData.Item item = clipData.getItemAt(i);
+
+                    try {
+                        items[i] = new JSONObject();
+
+                        if(item.getUri() != null) {
+
+                            items[i].put("uri", item.getUri());
+
+                            String type = cR.getType(item.getUri());
+                            String extension = mime.getExtensionFromMimeType(cR.getType(item.getUri()));
+
+                            items[i].put("type", type);
+                            items[i].put("extension", extension);
+                        }
+
+                    } catch (JSONException e) {
+                        Log.d(TAG, TAG + " Error thrown during intent > JSON conversion");
+                        Log.d(TAG, e.getMessage());
+                        Log.d(TAG, Arrays.toString(e.getStackTrace()));
+                    }
+
+                }
+            }
+        }
+
+        try {
+            intentJSON = new JSONObject();
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
+                if(items != null) {
+                    intentJSON.put("items", new JSONArray(items));
+                }
+            }
+
+            if(intent.getData() != null) {
+                items = new JSONObject[1];
+                items[0] = new JSONObject();
+                items[0].put("uri", intent.getData());
+
+                if(intent.getData() != null) {
+                    String type = cR.getType(intent.getData());
+                    String extension = mime.getExtensionFromMimeType(cR.getType(intent.getData()));
+
+                    items[0].put("type", type);
+                    items[0].put("extension", extension);
+                }
+                intentJSON.put("items", new JSONArray(items));
+            }
+
+            return intentJSON;
+        } catch (JSONException e) {
+            Log.d(TAG, TAG + " Error thrown during intent > JSON conversion");
+            Log.d(TAG, e.getMessage());
+            Log.d(TAG, Arrays.toString(e.getStackTrace()));
+
+            return null;
         }
     }
 
